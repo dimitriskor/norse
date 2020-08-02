@@ -99,19 +99,37 @@ class LIFCell(torch.nn.Module):
 
 
 class LIFLayer(torch.nn.Module):
+    """Module that integrates the LIF equations using Euler
+    integration. Assumes that the input_tensor is of shape [T, *],
+    where T stands for the number of time steps the Euler integration
+    will do.
+
+    Parameters:
+        cell_args: Arguments to the LIFCell
+        kw_args: Keyword arguments to the LIFCell
+
+    Examples:
+
+        >>> lif = LIFFeedForwardCell((20, 30))
+        >>> data = torch.randn(batch_size, 20, 30)
+        >>> s0 = lif.initial_state(batch_size, "cpu")
+        >>> output, s0 = lif(data, s0)
+    """
+
     def __init__(self, *cell_args, **kw_args):
         super(LIFLayer, self).__init__()
         self.cell = LIFCell(*cell_args, **kw_args)
 
     def forward(
         self, input_tensor: torch.Tensor, state: LIFState
-    ) -> Tuple[torch.Tensor, LIFState]:
-        inputs = input_tensor.unbind(0)
+    ) -> Tuple[torch.Tensor]:
+        T = input_tensor.shape[0]
+
         outputs = []  # torch.jit.annotate(List[torch.Tensor], [])
-        for i in range(len(inputs)):
-            out, state = self.cell(inputs[i], state)
+        for ts in range(T):
+            out, state = self.cell(input_tensor[ts], state)
             outputs += [out]
-        return torch.stack(outputs), state
+        return torch.stack(outputs)  # , state
 
 
 class LIFFeedForwardCell(torch.nn.Module):
@@ -173,3 +191,34 @@ class LIFFeedForwardCell(torch.nn.Module):
         self, x: torch.Tensor, state: LIFFeedForwardState
     ) -> Tuple[torch.Tensor, LIFFeedForwardState]:
         return lif_feed_forward_step(x, state, p=self.p, dt=self.dt)
+
+
+class LIFFeedForwardLayer(torch.nn.Module):
+    """Module that integrates the LIF equations using Euler
+    integration. Assumes that the input_tensor is of shape [T, *],
+    where T stands for the number of time steps the Euler integration
+    will do.
+
+    Parameters:
+        operator: Operator to apply at each timestep (can be a module such as torch.nn.Conv2d)
+        cell_args: Arguments to the LIFFeedForwardCell
+        kw_args: Keyword arguments to the LIFFeedForwardCell
+    """
+
+    def __init__(self, operator, *cell_args, **kw_args):
+        super(LIFFeedForwardLayer, self).__init__()
+        self.op = operator
+        self.cell = LIFFeedForwardCell(*cell_args, **kw_args)
+
+    def forward(
+        self, input_tensor: torch.Tensor, state: LIFFeedForwardState
+    ) -> Tuple[torch.Tensor, LIFState]:
+        T = input_tensor.shape[0]
+        outputs = []  # torch.jit.annotate(List[torch.Tensor], [])
+
+        for ts in range(T):
+            x = self.op(inputs[ts])
+            out, state = self.cell(x, state)
+            outputs += [out]
+
+        return torch.stack(outputs)
