@@ -27,7 +27,7 @@ def gaussian_kernel(x, s, c):
 
 
 def spatial_receptive_field(
-    angle, ratio, size: int, scale: float = 2.5, domain: float = 8
+    angle, ratio, size: int, scale: float = 2.5, dx: int = 0, dy: int = 0, domain: float = 8
 ):
     """
     Creates a (size x size) receptive field kernel
@@ -39,16 +39,20 @@ def spatial_receptive_field(
       scale (float): The scale of the field. Defaults to 2.5
       domain (float): The initial coordinates from which the field is sampled. Defaults to 8 (equal to -8 to 8).
     """
-    sm = torch.tensor([scale, scale * ratio])
+    sm = torch.ones(2)
+    sm[0] = scale
+    sm[1] = scale*ratio
     a = torch.linspace(-domain, domain, size)
-    r = torch.tensor(
-        [[torch.cos(angle), torch.sin(angle)], [-torch.sin(angle), torch.cos(angle)]],
-        dtype=torch.float32,
-    )
+    r = torch.ones((2,2))
+    r[0][0] = angle.cos()
+    r[0][1] = angle.sin()
+    r[1][0] = -angle.sin()
+    r[1][1] = angle.cos()    
     c = (r * sm) @ (sm * r).T
     xs, ys = torch.meshgrid(a, a, indexing="xy")
     coo = torch.stack([xs, ys], dim=2)
     k = gaussian_kernel(coo, scale, c)
+    k = _derived_field(k, (dx, dy))
     return k / k.sum()
 
 
@@ -70,34 +74,30 @@ def _extract_derivatives(
         )
 
 
-def _derive_fields(
-    fields: torch.Tensor, derivatives: List[Tuple[int, int]]
+def _derived_field(
+    field: torch.Tensor, derivatives: Tuple[int, int]
 ) -> torch.Tensor:
     out = []
-    for dx, dy in derivatives:
-        if dx == 0:
-            fx = fields
-        else:
-            fx = fields.diff(
-                dim=1, prepend=torch.zeros(fields.shape[0], dx, fields.shape[2]), n=dx
-            )
+    (dx, dy) = derivatives
+    if dx == 0:
+        fx = field
+    else:
+        fx = field.diff(
+            dim=0, prepend=torch.zeros(dx, field.shape[1]), n=dx)
 
-        if dy == 0:
-            fy = fx
-        else:
-            fy = fx.diff(
-                dim=2, prepend=torch.zeros(fields.shape[0], fields.shape[1], dy), n=dy
-            )
-        out.append(fy)
+    if dy == 0:
+        fy = fx
+    else:
+        fy = fx.diff(
+            dim=1, prepend=torch.zeros(field.shape[0], dy), n=dy)
+    out.append(fy)
     return torch.concat(out)
 
 
 def spatial_receptive_fields_with_derivatives(
-    n_scales: int,
-    n_angles: int,
-    n_ratios: int,
+    gf_attr,
+    derivative_max: int,
     size: int,
-    derivatives: Union[int, List[Tuple[int, int]]] = 0,
     min_scale: float = 0.2,
     max_scale: float = 1.5,
     min_ratio: float = 0.2,
@@ -130,42 +130,26 @@ def spatial_receptive_fields_with_derivatives(
         else:
             return torch.stack(x)
 
-    angles = torch.linspace(0, torch.pi - torch.pi / n_angles, n_angles)
-    ratios = torch.linspace(min_ratio, max_ratio, n_ratios)
-    scales = torch.exp(torch.linspace(min_scale, max_scale, n_scales))
     # We add extra space in both the domain and size to account for the derivatives
-    derivative_list, derivative_max = _extract_derivatives(derivatives)
     domain = 8 + derivative_max * size * 0.5
 
-    assymmetric_rings = _stack_empty(
+    rings = _stack_empty(
         [
-            spatial_receptive_field(
-                angle, ratio, size=size + 2 * derivative_max, scale=scale, domain=domain
-            )
-            for angle in angles
-            for scale in scales
-            for ratio in ratios[:-1]
+            spatial_receptive_field(attr[1], attr[2], size=size + 2 * derivative_max, scale=attr[0], dx=attr[3], dy=attr[4], domain=domain)
+            for attr in gf_attr
         ]
     )
-    symmetric_rings = _stack_empty(
-        [
-            spatial_receptive_field(
-                torch.as_tensor(0),
-                torch.as_tensor(1),
-                size + 2 * derivative_max,
-                scale=scale,
-                domain=domain,
-            )
-            for scale in scales
-        ]
-    )
-    rings = torch.concat([assymmetric_rings, symmetric_rings])
-    derived_fields = _derive_fields(rings, derivative_list)
-    return derived_fields[
+    derived_fields = rings[
         :,
         derivative_max : size + derivative_max,
         derivative_max : size + derivative_max,  # Remove extra space
     ]
+    #derived_fields.sum().backward()
+    #print(angles.grad)
+
+    return derived_fields
+
+
 
 
 def temporal_scale_distribution(

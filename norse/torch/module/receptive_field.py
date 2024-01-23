@@ -8,11 +8,15 @@ from typing import Callable, List, NamedTuple, Optional, Tuple, Type, Union
 
 import torch
 
+#from norse.torch.module.leaky_integrator_box import LIBoxCell, LIBoxParameters
+from norse.torch.module.snn import SNNCell
+
 from norse.torch.module.leaky_integrator_box import LIBoxCell, LIBoxParameters
 from norse.torch.module.snn import SNNCell
 from norse.torch.functional.receptive_field import (
     spatial_receptive_fields_with_derivatives,
     temporal_scale_distribution,
+    _extract_derivatives,
 )
 
 
@@ -53,35 +57,71 @@ class SpatialReceptiveField2d(torch.nn.Module):
         **kwargs
     ) -> None:
         super().__init__()
-        fields = spatial_receptive_fields_with_derivatives(
-            n_scales,
-            n_angles,
-            n_ratios,
-            size,
-            derivatives,
-            min_scale,
-            max_scale,
-            min_ratio,
-            max_ratio,
+
+        self.aggregate = aggregate
+        self.size = size
+        self.derivatives = derivatives
+        self.in_channels = in_channels
+        self.kwargs = kwargs
+        
+        self.angles = torch.linspace(0, torch.pi - torch.pi / n_angles, n_angles, requires_grad=True)
+        self.ratios = torch.linspace(min_ratio, max_ratio, n_ratios, requires_grad=True)
+        self.log_scales = torch.linspace(min_scale, max_scale, n_scales, requires_grad=True)
+        scales = torch.exp(self.log_scales)
+        
+        self.update = False
+        derivative_list, self.derivative_max = _extract_derivatives(self.derivatives)
+        gf_attr = [[s, a, r, d[0], d[1]] for s in scales for a in self.angles for r in self.ratios for d in derivative_list]
+        self.gf_attr = torch.tensor(gf_attr, requires_grad=True)
+        self.fields = spatial_receptive_fields_with_derivatives(
+            self.gf_attr,
+            self.derivative_max,
+            self.size,
         )
-        if aggregate:
-            self.out_channels = fields.shape[0]
-            weights = fields.unsqueeze(1).repeat(1, in_channels, 1, 1)
+        if self.aggregate:
+            self.out_channels = self.fields.shape[0]
+            weights = self.fields.unsqueeze(1).repeat(1, in_channels, 1, 1)
         else:
-            self.out_channels = fields.shape[0] * in_channels
-            empty_weights = torch.zeros(in_channels, fields.shape[0], size, size)
+            self.out_channels = self.fields.shape[0] * in_channels
+            empty_weights = torch.zeros(in_channels, self.fields.shape[0], size, size)
             weights = []
             for i in range(in_channels):
                 in_weights = empty_weights.clone()
-                in_weights[i] = fields
+                in_weights[i] = self.fields
                 weights.append(in_weights)
             weights = torch.concat(weights, 1).permute(1, 0, 2, 3)
-
         self.conv = torch.nn.Conv2d(in_channels, self.out_channels, size, **kwargs)
-        self.conv.weight = torch.nn.Parameter(weights)
+        self.conv.weight = torch.nn.Parameter(weights, requires_grad=False)
+        self.conv.weight[:] = weights[:]
+        print(self.gf_attr.grad)
+        print(self.angles.grad, self.ratios.grad, self.log_scales.grad)
 
     def forward(self, x: torch.Tensor):
+        if self.update:
+            self.update = False
+            self.fields = spatial_receptive_fields_with_derivatives(
+                self.gf_attr,
+                self.derivative_max,
+                self.size,
+            )
+            if self.aggregate:
+                self.out_channels = self.fields.shape[0]
+                weights = self.fields.unsqueeze(1).repeat(1, self.in_channels, 1, 1)
+            else:
+                self.out_channels = self.fields.shape[0] * self.in_channels
+                empty_weights = torch.zeros(self.in_channels, self.fields.shape[0], self.size, self.size)
+                weights = []
+                for i in range(self.in_channels):
+                    in_weights = empty_weights.clone()
+                    in_weights[i] = self.fields
+                    weights.append(in_weights)
+                weights = torch.concat(weights, 1).permute(1, 0, 2, 3)
+            self.conv = torch.nn.Conv2d(self.in_channels, self.out_channels, self.size, **self.kwargs)
+            self.conv.weight = torch.nn.Parameter(weights, requires_grad=False)
+            self.conv.weight[:] = weights[:]
+        
         return self.conv(x)
+
 
 
 class TemporalReceptiveField(torch.nn.Module):
