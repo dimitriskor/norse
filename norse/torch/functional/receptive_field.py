@@ -23,6 +23,7 @@ def gaussian_kernel(x, s, c):
     fraction = 1 / (2 * torch.pi * s * torch.sqrt(cd))
     b = torch.einsum("bimj,jk->bik", -x.unsqueeze(2), ci)
     a = torch.einsum("bij,bij->bi", b, x)
+    a = a.to(fraction.device)
     return fraction * torch.exp(a / (2 * s))
 
 
@@ -53,7 +54,7 @@ def spatial_receptive_field(
     coo = torch.stack([xs, ys], dim=2)
     k = gaussian_kernel(coo, scale, c)
     k = _derived_field(k, (dx, dy))
-    return k / k.sum()
+    return k
 
 
 def _extract_derivatives(
@@ -79,17 +80,17 @@ def _derived_field(
 ) -> torch.Tensor:
     out = []
     (dx, dy) = derivatives
+    device = field.device
     if dx == 0:
         fx = field
     else:
         fx = field.diff(
-            dim=0, prepend=torch.zeros(dx, field.shape[1]), n=dx)
-
+            dim=0, prepend=torch.zeros(int(dx.item()), field.shape[1]).to(device), n=int(dx.item()))
     if dy == 0:
         fy = fx
     else:
         fy = fx.diff(
-            dim=1, prepend=torch.zeros(field.shape[0], dy), n=dy)
+            dim=1, prepend=torch.zeros(field.shape[0], int(dy.item())).to(device), n=int(dy.item()))
     out.append(fy)
     return torch.concat(out)
 

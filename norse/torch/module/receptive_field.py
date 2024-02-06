@@ -12,6 +12,8 @@ import torch
 from norse.torch.module.snn import SNNCell
 
 from norse.torch.module.leaky_integrator_box import LIBoxCell, LIBoxParameters
+from norse.torch.module.lif import LIFCell
+from norse.torch.functional.lif import LIFParameters
 from norse.torch.module.snn import SNNCell
 from norse.torch.functional.receptive_field import (
     spatial_receptive_fields_with_derivatives,
@@ -48,12 +50,14 @@ class SpatialReceptiveField2d(torch.nn.Module):
         n_angles: int,
         n_ratios: int,
         size: int,
+        n_time_scales: int = 1,
         derivatives: Union[int, List[Tuple[int, int]]] = 0,
         min_scale: float = 0.2,
         max_scale: float = 1.5,
         min_ratio: float = 0.2,
         max_ratio: float = 1,
         aggregate: bool = True,
+        device: str = "cpu",
         **kwargs
     ) -> None:
         super().__init__()
@@ -63,21 +67,23 @@ class SpatialReceptiveField2d(torch.nn.Module):
         self.derivatives = derivatives
         self.in_channels = in_channels
         self.kwargs = kwargs
-        
-        self.angles = torch.linspace(0, torch.pi - torch.pi / n_angles, n_angles, requires_grad=True)
-        self.ratios = torch.linspace(min_ratio, max_ratio, n_ratios, requires_grad=True)
-        self.log_scales = torch.linspace(min_scale, max_scale, n_scales, requires_grad=True)
+        self.device = device
+        self.angles = torch.linspace(0, torch.pi - torch.pi / n_angles, n_angles)
+        self.ratios = torch.linspace(min_ratio, max_ratio, n_ratios)
+        self.log_scales = torch.linspace(min_scale, max_scale, n_scales)
         scales = torch.exp(self.log_scales)
         
         self.update = False
         derivative_list, self.derivative_max = _extract_derivatives(self.derivatives)
         gf_attr = [[s, a, r, d[0], d[1]] for s in scales for a in self.angles for r in self.ratios for d in derivative_list]
-        self.gf_attr = torch.tensor(gf_attr, requires_grad=True)
+        gf_attr = torch.tensor(gf_attr, requires_grad=False).repeat(n_time_scales,1)
+        self.gf_attr = torch.tensor(gf_attr, requires_grad=True, device=self.device)
         self.fields = spatial_receptive_fields_with_derivatives(
             self.gf_attr,
             self.derivative_max,
             self.size,
         )
+        self.fields = self.fields.to(self.device)
         if self.aggregate:
             self.out_channels = self.fields.shape[0]
             weights = self.fields.unsqueeze(1).repeat(1, in_channels, 1, 1)
@@ -90,11 +96,11 @@ class SpatialReceptiveField2d(torch.nn.Module):
                 in_weights[i] = self.fields
                 weights.append(in_weights)
             weights = torch.concat(weights, 1).permute(1, 0, 2, 3)
-        self.conv = torch.nn.Conv2d(in_channels, self.out_channels, size, **kwargs)
-        self.conv.weight = torch.nn.Parameter(weights, requires_grad=False)
+        weights = weights.to(self.device)
+        self.conv = torch.nn.Conv2d(in_channels, self.out_channels, size, **kwargs, bias=False,)
+        self.conv.weight.data = self.conv.weight.data.to(self.device)
+        self.conv.weight.requires_grad_(False)
         self.conv.weight[:] = weights[:]
-        print(self.gf_attr.grad)
-        print(self.angles.grad, self.ratios.grad, self.log_scales.grad)
 
     def forward(self, x: torch.Tensor):
         if self.update:
@@ -104,6 +110,7 @@ class SpatialReceptiveField2d(torch.nn.Module):
                 self.derivative_max,
                 self.size,
             )
+            self.fields = self.fields.to(self.device)
             if self.aggregate:
                 self.out_channels = self.fields.shape[0]
                 weights = self.fields.unsqueeze(1).repeat(1, self.in_channels, 1, 1)
@@ -116,12 +123,13 @@ class SpatialReceptiveField2d(torch.nn.Module):
                     in_weights[i] = self.fields
                     weights.append(in_weights)
                 weights = torch.concat(weights, 1).permute(1, 0, 2, 3)
-            self.conv = torch.nn.Conv2d(self.in_channels, self.out_channels, self.size, **self.kwargs)
-            self.conv.weight = torch.nn.Parameter(weights, requires_grad=False)
+            weights = weights.to(self.device)
+            self.conv = torch.nn.Conv2d(self.in_channels, self.out_channels, self.size, **self.kwargs, bias=False,)
+            self.conv.weight.data = self.conv.weight.data.to(self.device)
+            self.conv.weight.requires_grad_(False)
             self.conv.weight[:] = weights[:]
         
         return self.conv(x)
-
 
 
 class TemporalReceptiveField(torch.nn.Module):
@@ -145,15 +153,12 @@ class TemporalReceptiveField(torch.nn.Module):
         self,
         shape: torch.Size,
         n_scales: int = 4,
-        activation: Type[SNNCell] = LIBoxCell,
-        activation_state_map: Callable[
-            [torch.Tensor], NamedTuple
-        ] = lambda t: LIBoxParameters(tau_mem_inv=t),
         min_scale: float = 1,
         max_scale: Optional[float] = None,
         c: float = 1.41421,
         time_constants: Optional[torch.Tensor] = None,
         dt: float = 0.001,
+        device: str = "cpu"
     ):
         super().__init__()
         if time_constants is None:
@@ -163,24 +168,29 @@ class TemporalReceptiveField(torch.nn.Module):
             self.time_constants = torch.stack(
                 [
                     torch.full(
-                        [shape[0], *[1 for i in range(len(shape) - 1)]],
+                        [shape[0]//n_scales],
                         tau,
                         dtype=torch.float32,
                     )
                     for tau in taus
                 ]
             )
+            self.time_constants = self.time_constants.flatten()
         else:
             self.time_constants = time_constants
-        self.ps = torch.nn.Parameter(self.time_constants)
-        # pytype: disable=missing-parameter
-        self.neurons = activation(p=activation_state_map(self.ps), dt=dt)
-        # pytype: enable=missing-parameter
-        self.rf_dimension = len(shape)
         self.n_scales = n_scales
-
+        # self.time_constants = self.time_constants.repeat_interleave(shape[1])
+        self.time_constants = self.time_constants.to(device)
+        self.ps = torch.nn.Parameter(self.time_constants, requires_grad=True)
+        self.channels = [LIFCell(
+            p=LIFParameters(tau_mem_inv=self.ps[i])).to(device) for i in range(self.ps.shape[0])]
+        
     def forward(self, x: torch.Tensor, state: Optional[NamedTuple] = None):
-        x_repeated = torch.stack(
-            [x for _ in range(self.n_scales)], dim=-self.rf_dimension - 1
-        )
-        return self.neurons(x_repeated, state)
+        x_repeated = torch.einsum('ijkl->jikl', x)
+        if state == None:
+            state = [None for _ in range(len(self.channels))]
+        y, st = torch.einsum('ijkl->jikl', torch.stack([self.channels[i](x.unsqueeze(0), state[i])[0] for i, x in enumerate(x_repeated)]).squeeze(dim=1)), [self.channels[i](x.unsqueeze(0), state[i])[1] for i, x in enumerate(x_repeated)]
+        return y, st
+
+
+
