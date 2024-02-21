@@ -54,7 +54,7 @@ def spatial_receptive_field(
     coo = torch.stack([xs, ys], dim=2)
     k = gaussian_kernel(coo, scale, c)
     k = _derived_field(k, (dx, dy))
-    return k
+    return k/torch.abs(k).sum()
 
 
 def _extract_derivatives(

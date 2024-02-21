@@ -58,6 +58,7 @@ class SpatialReceptiveField2d(torch.nn.Module):
         max_ratio: float = 1,
         aggregate: bool = True,
         device: str = "cpu",
+        gradient = [False, False, False],
         **kwargs
     ) -> None:
         super().__init__()
@@ -77,7 +78,18 @@ class SpatialReceptiveField2d(torch.nn.Module):
         derivative_list, self.derivative_max = _extract_derivatives(self.derivatives)
         gf_attr = [[s, a, r, d[0], d[1]] for s in scales for a in self.angles for r in self.ratios for d in derivative_list]
         gf_attr = torch.tensor(gf_attr, requires_grad=False).repeat(n_time_scales,1)
-        self.gf_attr = torch.tensor(gf_attr, requires_grad=True, device=self.device)
+        self.scales = gf_attr[:,0]
+        self.angles = gf_attr[:,1]
+        self.ratios = gf_attr[:,2]
+        self.rest = gf_attr[:,3:]
+        if gradient[0]:
+            self.scales.requires_grad_(True) 
+        if gradient[1]:
+            self.angles.requires_grad_(True) 
+        if gradient[2]:
+            self.ratios.requires_grad_(True) 
+        # self.gf_attr = torch.tensor(gf_attr, requires_grad=True, device=self.device)
+        self.gf_attr = torch.cat((self.scales.unsqueeze(1), self.angles.unsqueeze(1), self.ratios.unsqueeze(1), self.rest), dim=1)
         self.fields = spatial_receptive_fields_with_derivatives(
             self.gf_attr,
             self.derivative_max,
