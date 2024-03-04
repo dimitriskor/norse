@@ -43,7 +43,7 @@ def spatial_receptive_field(
     sm = torch.ones(2)
     sm[0] = scale
     sm[1] = scale*ratio
-    a = torch.linspace(-domain, domain, size)
+    a = torch.linspace(-domain, domain, size**2)
     r = torch.ones((2,2))
     r[0][0] = angle.cos()
     r[0][1] = angle.sin()
@@ -54,6 +54,7 @@ def spatial_receptive_field(
     coo = torch.stack([xs, ys], dim=2)
     k = gaussian_kernel(coo, scale, c)
     k = _derived_field(k, (dx, dy))
+    k = torch.nn.functional.avg_pool2d(k.unsqueeze(0), size, stride=size)[0]
     return k/torch.abs(k).sum()
 
 
