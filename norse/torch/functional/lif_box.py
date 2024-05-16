@@ -92,7 +92,7 @@ def lif_box_feed_forward_step(
         dt (float): Integration timestep to use
     """
     # compute voltage updates
-    dv = dt * p.tau_mem_inv * (input_tensor + p.v_leak - state.v)
+    dv = dt * p.tau_mem_inv * (p.v_leak - state.v) + input_tensor
     v_decayed = state.v + dv
 
     # compute new spikes
