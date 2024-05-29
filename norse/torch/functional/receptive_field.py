@@ -19,7 +19,7 @@ def gaussian_kernel(size: int, c: torch.Tensor, domain: int = 8) -> torch.Tensor
     ci = torch.linalg.inv(c)
     cd = torch.linalg.det(c)
     fraction = 1 / (2 * torch.pi * torch.sqrt(cd))
-    a = torch.linspace(-domain, domain, size)
+    a = torch.linspace(-domain, domain, size, device=ci.device)
     xs, ys = torch.meshgrid(a, a, indexing="xy")
     coo = torch.stack([xs, ys], dim=2)
     b = torch.einsum("bimj,jk->bik", -coo.unsqueeze(2), ci)
