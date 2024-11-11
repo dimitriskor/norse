@@ -40,8 +40,8 @@ class LIFBoxCell(SNNCell):
         dt (float): Integration timestep to use
     """
 
-    def __init__(self, p: LIFBoxParameters = LIFBoxParameters(), dt: float = 0.001):
-        super().__init__(lif_box_feed_forward_step, self.initial_state, p, dt=dt)
+    def __init__(self, p: LIFBoxParameters = LIFBoxParameters(), **kwargs):
+        super().__init__(lif_box_feed_forward_step, self.initial_state, p, **kwargs)
 
     def initial_state(self, input_tensor: torch.Tensor) -> LIFBoxFeedForwardState:
         state = LIFBoxFeedForwardState(v=clone_tensor(self.p.v_leak))

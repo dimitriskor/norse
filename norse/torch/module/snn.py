@@ -2,6 +2,7 @@
 Base module for spiking neural network (SNN) modules.
 """
 
+from ast import Call
 from weakref import ref
 from typing import Any, Callable, List, Optional, Tuple
 import torch
@@ -69,6 +70,8 @@ class SNNCell(torch.nn.Module):
         state_fallback: Callable[[torch.Tensor], torch.Tensor],
         p: Any,
         dt: float = 0.001,
+        f_p: Callable = lambda x : x,
+        g_p: Callable = lambda x : x,
         activation_sparse: Optional[FeedforwardActivation] = None,
     ):
         super().__init__()
@@ -76,6 +79,8 @@ class SNNCell(torch.nn.Module):
         self.activation_sparse = activation_sparse
         self.state_fallback = state_fallback
         self.p = p
+        self.f_p = f_p
+        self.g_p = g_p
         self.dt = dt
 
     def extra_repr(self) -> str:
@@ -86,7 +91,7 @@ class SNNCell(torch.nn.Module):
         if self.activation_sparse is not None and input_tensor.is_sparse:
             return self.activation_sparse(input_tensor, state, self.p, self.dt)
         else:
-            return self.activation(input_tensor, state, self.p, self.dt)
+            return self.activation(input_tensor, state, self.p, self.f_p, self.g_p, self.dt)
 
 
 class SNNRecurrentCell(torch.nn.Module):
